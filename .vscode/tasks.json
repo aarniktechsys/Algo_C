@@ -1,0 +1,25 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build C program",
+      "type": "shell",
+      "command": "gcc",
+      "args": [
+        "main.c",
+        "Algorithms/stepCounter.c",
+        "Algorithms/PedestrianDeadRecon.c",
+        "Algorithms/stepCounter_openSource.c",
+        "Algorithms/stepCounter_HPF_BPF.c",
+        "Algorithms/stepCounter_HPF_BPF_SW_Filters.c",
+        "-o",
+        "main.exe" // or "step_counter.out" on Linux/macOS
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    }
+  ]
+}
