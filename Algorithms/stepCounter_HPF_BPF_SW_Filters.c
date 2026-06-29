@@ -4,7 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include "../main.h"
 #include "stepCounter_HPF_BPF.h"
+#include "PedestrianDeadRecon.h"
 
 float Ax[BLOCK_SIZE] = {0};
 float Ay[BLOCK_SIZE] = {0};
@@ -15,27 +17,35 @@ float Gz[BLOCK_SIZE] = {0};
 
 float last_orientation_deg = 0.0f;
 uint8_t is_wrist_raise = false;
+uint8_t mag_printed = 0;
 
 void highpass_filtfilt(const float *input, float *output);
 void bandpass_filtfilt(const float *input, float *output);
+/*int process_step_block_SF(int16_t *Ax_raw, int16_t *Ay_raw, int16_t *Az_raw,
+    int16_t *Gx_raw, int16_t *Gy_raw, int16_t *Gz_raw, uint8_t total_samples);*/
 int process_step_block_SF(int16_t *Ax_raw, int16_t *Ay_raw, int16_t *Az_raw,
-    int16_t *Gx_raw, int16_t *Gy_raw, int16_t *Gz_raw, uint8_t total_samples);
+                          int16_t *Gx_raw, int16_t *Gy_raw, int16_t *Gz_raw,
+                          int16_t *Mx_raw, int16_t *My_raw, int16_t *Mz_raw, uint8_t total_samples);
 
 int process_step_block_SF(int16_t *Ax_raw, int16_t *Ay_raw, int16_t *Az_raw,
-    int16_t *Gx_raw, int16_t *Gy_raw, int16_t *Gz_raw, uint8_t total_samples) {
+    int16_t *Gx_raw, int16_t *Gy_raw, int16_t *Gz_raw,
+    int16_t *Mx_raw, int16_t *My_raw, int16_t *Mz_raw, uint8_t total_samples) {
 
     static float fx[BLOCK_SIZE], fy[BLOCK_SIZE], fz[BLOCK_SIZE];
     static float magnitude[BLOCK_SIZE], filtered_mag[BLOCK_SIZE], magnitude_gyro[BLOCK_SIZE];
     static float temp_Ax[BLOCK_SIZE] = {0}, temp_Ay[BLOCK_SIZE] = {0}, temp_Az[BLOCK_SIZE] = {0};
     static int16_t temp_Ax_mg[BLOCK_SIZE] = {0}, temp_Ay_mg[BLOCK_SIZE] = {0}, temp_Az_mg[BLOCK_SIZE] = {0};
     static float gyro_x[BLOCK_SIZE] = {0}, gyro_y[BLOCK_SIZE] = {0}, gyro_z[BLOCK_SIZE] = {0};
+    static float mag_x[BLOCK_SIZE] = {0}, mag_y[BLOCK_SIZE] = {0}, mag_z[BLOCK_SIZE] = {0};
+    static float gyro_x_rad[BLOCK_SIZE] = {0}, gyro_y_rad[BLOCK_SIZE] = {0}, gyro_z_rad[BLOCK_SIZE] = {0};
     float gyro_mag_sq[BLOCK_SIZE] = {0}, gyro_mag_smooth[BLOCK_SIZE] = {0};
     float pitch_arr[BLOCK_SIZE] = {0}, roll_arr[BLOCK_SIZE] = {0};
+    int raise_count = 0;
 
     int active_gyro_samples = 0, idle_sample_count = 0, orientation_idle_count = 0;
     int16_t steps = 0;
     float mean_z = 0;
-    int orientation_stable_count = 0;
+    int orientation_stable_count = 0;    
 
     // Load and convert raw samples
     for (int i = 0; i < total_samples; ++i) {
@@ -47,9 +57,26 @@ int process_step_block_SF(int16_t *Ax_raw, int16_t *Ay_raw, int16_t *Az_raw,
         gyro_y[i] = ((float)Gy_raw[i]) / 1000.0f;
         gyro_z[i] = ((float)Gz_raw[i]) / 1000.0f;
 
+        gyro_x_rad[i] = gyro_x[i] * 0.0174533f;
+        gyro_y_rad[i] = gyro_y[i] * 0.0174533f;
+        gyro_z_rad[i] = gyro_z[i] * 0.0174533f;
+
+        /*mag_x[i] = My_raw[i];
+        mag_y[i] = -Mx_raw[i];
+        mag_z[i] = Mz_raw[i]; */
+        mag_x[i] = -Mx_raw[i];
+        mag_y[i] = My_raw[i];
+        mag_z[i] = Mz_raw[i];        
+
         temp_Ax_mg[i] = (int16_t)(temp_Ax[i] * 1000.0f + 0.5f);
         temp_Ay_mg[i] = (int16_t)(temp_Ay[i] * 1000.0f + 0.5f);
         temp_Az_mg[i] = (int16_t)(temp_Az[i] * 1000.0f + 0.5f);
+
+        MadgwickAHRSupdate(
+            gyro_x_rad[i], gyro_y_rad[i], gyro_z_rad[i],
+            temp_Ax[i], temp_Ay[i], temp_Az[i],            
+            mag_x[i], mag_y[i], mag_z[i]
+        );
 
         mean_z += temp_Az[i];
     }
@@ -81,7 +108,23 @@ int process_step_block_SF(int16_t *Ax_raw, int16_t *Ay_raw, int16_t *Az_raw,
             ref_pitch += pitch_arr[i];
             ref_roll  += roll_arr[i];
         }
+
+        /*printf("Raise match condition: i=%d pitch=%.2f roll=%.2f Az=%d Gy=%.2f Gz=%.2f\n",
+           i, pitch_arr[i], roll_arr[i], temp_Az_mg[i], gyro_y[i],gyro_z[i]); */       
+
+        if(pitch_arr[i] >= RAISE_PITCH_MIN && 
+            pitch_arr[i] <= RAISE_PITCH_MAX &&
+            fabsf(roll_arr[i]) <= RAISE_ROLL_ABS_MAX &&
+            temp_Az_mg[i] > RAISE_Z_MG_MIN && 
+            gyro_y[i] > RAISE_GYRO_THRESH_DPS){
+               /* printf("Raise match: i=%d pitch=%.2f roll=%.2f Az=%d Gy=%.2f Gz=%.2f\n",
+           i, pitch_arr[i], roll_arr[i], temp_Az_mg[i], gyro_y[i],gyro_z[i]);*/
+                raise_count++;
+        }
     }
+
+    is_wrist_raise = (raise_count >= RAISE_DETECT_MIN_COUNT) ? 1 : 0;
+    //printf("is_wrist_raise=%d\n", is_wrist_raise);
 
     ref_pitch /= REF_SAMPLE_COUNT;
     ref_roll  /= REF_SAMPLE_COUNT;
@@ -95,9 +138,9 @@ int process_step_block_SF(int16_t *Ax_raw, int16_t *Ay_raw, int16_t *Az_raw,
             roll_delta  < ORIENTATION_DELTA_THRESHOLD) {
                 orientation_stable_count++;
         } else {
-            /*printf("pitch[%d]=%.2f pitch[%d]=%.2f pitch_delta=%.2f | roll[%d]=%.2f roll[%d]=%.2f delta_roll=%.2f\n",
+            /* printf("pitch[%d]=%.2f pitch[%d]=%.2f pitch_delta=%.2f | roll[%d]=%.2f roll[%d]=%.2f delta_roll=%.2f\n",
                 i - 1, pitch_arr[i - 1], i, pitch_arr[i], pitch_delta,
-                i - 1, roll_arr[i - 1], i, roll_arr[i], roll_delta);*/
+                i - 1, roll_arr[i - 1], i, roll_arr[i], roll_delta); */
         }
     }
 
@@ -119,11 +162,11 @@ int process_step_block_SF(int16_t *Ax_raw, int16_t *Ay_raw, int16_t *Az_raw,
     uint8_t is_gyro_idle  = (active_gyro_samples <= MAX_ACTIVE_GYRO_SAMPLES);
     uint8_t is_orientation_idle = (orientation_stable_count >= ORIENTATION_IDLE_MIN_SAMPLES);
 
-    printf("is_accel_idle= %d, is_gyro_idle= %d, is_orientation_idle= %d\n", is_accel_idle, is_gyro_idle, is_orientation_idle);
-    printf("idle_sample_count = %d, orientation_idle_count = %d\n", idle_sample_count, orientation_idle_count);
+    //printf("is_accel_idle= %d, is_gyro_idle= %d, is_orientation_idle= %d\n", is_accel_idle, is_gyro_idle, is_orientation_idle);
+    //printf("idle_sample_count = %d, orientation_idle_count = %d\n", idle_sample_count, orientation_idle_count);
 
     if ((is_orientation_idle || is_accel_idle) && is_gyro_idle) {
-        printf("Watch is idle\n");
+        //printf("Watch is idle\n");
         return 0;
     }
 
@@ -207,8 +250,10 @@ int process_step_block_SF(int16_t *Ax_raw, int16_t *Ay_raw, int16_t *Az_raw,
 
     if (min_peak_distance < 12) min_peak_distance = 12;
 
-    printf("avg_interval= %f\n",avg_interval);
-    printf("min_peak_distance= %d\n",min_peak_distance);
+    /* printf("avg_interval= %f\n",avg_interval);
+    printf("min_peak_distance= %d\n",min_peak_distance); */
+    fprintf(step_detection_log, "%f,%d,%f,%f,%f\n", avg_interval, min_peak_distance, std, energy,mean_z);
+    printf("avg_interval= %f,min_peak_distance=%d,std=%f,energy=%f,mean_z=%f\n", avg_interval, min_peak_distance, std, energy,mean_z);
 
     if (avg_interval > 14.0f && 
         (std < 0.015f || energy < 0.02f || 
@@ -236,6 +281,7 @@ int process_step_block_SF(int16_t *Ax_raw, int16_t *Ay_raw, int16_t *Az_raw,
                 ((i - last_peak_index) == min_peak_distance - 1 && current > 1.2f * threshold)) {
                 peak_count++;
                 last_peak_index = i;
+                update_position(0.7f,peak_count);
             }
         }
     }       

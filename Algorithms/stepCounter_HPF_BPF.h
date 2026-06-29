@@ -36,10 +36,21 @@
 
 #define PI 3.14159265f
 
+#define RAISE_PITCH_MIN         30.0f
+#define RAISE_PITCH_MAX         70.0f
+#define RAISE_ROLL_ABS_MAX      50.0f
+#define RAISE_Z_MG_MIN          700
+#define RAISE_GYRO_THRESH_DPS   15.0f
+#define RAISE_DETECT_MIN_COUNT  3
+#define RAISE_COOLDOWN_BLOCKS   3
+
 extern int last_peak_index_global;
 
 int process_step_block(int16_t *Ax_raw, int16_t *Ay_raw, int16_t *Az_raw,
                        int16_t *Gx_raw, int16_t *Gy_raw, int16_t *Gz_raw,
                        int16_t* recent_step_counter);
+/*int process_step_block_SF(int16_t *Ax_raw, int16_t *Ay_raw, int16_t *Az_raw,
+                          int16_t *Gx_raw, int16_t *Gy_raw, int16_t *Gz_raw, uint8_t total_samples);*/
 int process_step_block_SF(int16_t *Ax_raw, int16_t *Ay_raw, int16_t *Az_raw,
-                          int16_t *Gx_raw, int16_t *Gy_raw, int16_t *Gz_raw, uint8_t total_samples);
+                          int16_t *Gx_raw, int16_t *Gy_raw, int16_t *Gz_raw,
+                          int16_t *Mx_raw, int16_t *My_raw, int16_t *Mz_raw, uint8_t total_samples);

@@ -20,7 +20,6 @@ int step_timer = 0;
 // Position tracking
 float pos_x = 0.0f, pos_y = 0.0f;
 
-
 void process_sensor_data(float ax, float ay, float az,
     float gx, float gy, float gz,
     float mx, float my, float mz);
@@ -28,7 +27,9 @@ void MadgwickAHRSupdate(float gx, float gy, float gz, float ax, float ay, float 
                         float mx, float my, float mz);
 float get_heading_deg();
 bool detect_step(float ax, float ay, float az);
-void update_position(float step_length);
+void update_position(float step_length, int peak_count);
+void pdr_to_latlon(double lat0_deg, double lon0_deg, float heading_deg, float step_len_m,
+                   double *new_lat_deg, double *new_lon_deg);
 //===============================================================================
 // @brief  Madgwick Filter Update
 //
@@ -114,6 +115,54 @@ void MadgwickAHRSupdate(float gx, float gy, float gz, float ax, float ay, float 
     q1 *= recipNorm;
     q2 *= recipNorm;
     q3 *= recipNorm;
+
+    /* printf("q0 = %f", q0);
+    printf("q1 = %f", q1);
+    printf("q2 = %f", q2);
+    printf("q3 = %f", q3); */
+}
+//===============================================================================
+// @brief  Interpolate with known longitude and latitude
+//
+// @param[in]    : 
+// @param[out]   :
+// @param[inout] :
+// @retval       :
+//===============================================================================
+void pdr_to_latlon(double lat0_deg, double lon0_deg, float heading_deg, float step_len_m,
+                   double* new_lat_deg, double* new_lon_deg) {
+    // Convert inputs to radians
+    double lat0_rad = DEG2RAD(lat0_deg);
+    double lon0_rad = DEG2RAD(lon0_deg);
+    double heading_rad = DEG2RAD(heading_deg);
+
+    double delta = step_len_m / EARTH_RADIUS_M;
+
+    // Compute new latitude
+    double lat1_rad = asin(sin(lat0_rad) * cos(delta) +
+                           cos(lat0_rad) * sin(delta) * cos(heading_rad));
+
+    // Compute new longitude
+    double lon1_rad = lon0_rad + atan2(sin(heading_rad) * sin(delta) * cos(lat0_rad),
+                                       cos(delta) - sin(lat0_rad) * sin(lat1_rad));
+
+    // Convert back to degrees
+    *new_lat_deg = RAD2DEG(lat1_rad);
+    *new_lon_deg = RAD2DEG(lon1_rad);
+}
+
+// Convert total (x, y) meters to lat/lon offset
+void displacement_to_latlon(double lat0_deg, double lon0_deg, float dx_m, float dy_m,
+                            double* new_lat_deg, double* new_lon_deg) {
+    double lat0_rad = DEG2RAD(lat0_deg);
+    double lon0_rad = DEG2RAD(lon0_deg);
+
+    // Latitude offset (north-south)
+    double dlat_rad = dy_m / EARTH_RADIUS_M;
+    double dlon_rad = dx_m / (EARTH_RADIUS_M * cos(lat0_rad));
+
+    *new_lat_deg = lat0_deg + RAD2DEG(dlat_rad);
+    *new_lon_deg = lon0_deg + RAD2DEG(dlon_rad);
 }
 //===============================================================================
 // @brief  Compute heading from quaternion
@@ -124,11 +173,15 @@ void MadgwickAHRSupdate(float gx, float gy, float gz, float ax, float ay, float 
 // @retval       :
 //===============================================================================
 float get_heading_deg() {
+    double lat0 = 17.5039247;  // Start Latitude (Hyderabad)
+    double lon0 = 78.3584966;  // Start Longitude
     float heading = atan2f(2.0f * (q0 * q3 + q1 * q2),
                            1.0f - 2.0f * (q2 * q2 + q3 * q3));
     heading *= (180.0f / 3.14159265f);
+    heading  = (heading) - 176.24;
     if (heading < 0) heading += 360.0f;
-    printf("heading =  %f ", heading);
+    
+    printf("new_lat =  %f,new_lon = %f\n", heading);
     return heading;
 }
 //===============================================================================
@@ -162,13 +215,26 @@ bool detect_step(float ax, float ay, float az) {
 // @param[inout] :
 // @retval       :
 //===============================================================================
-void update_position(float step_length) {
-    float heading = DEG2RAD(get_heading_deg());
-    pos_x += step_length * cosf(heading);
-    pos_y += step_length * sinf(heading);
+void update_position(float step_length, int peak_count) {    
+    double new_lat, new_lon;
+    double lat0 = 17.5019634;  // Start Latitude (Hyderabad)
+    double lon0 = 78.3601644;  // Start Longitude
 
-    printf("pos_x =  %d ", pos_x);
-    printf("pos_y =  %d\n", pos_y);
+    float heading_deg = get_heading_deg();                // Keep heading in degrees for logging
+    float heading_rad = DEG2RAD(heading_deg);             // Convert only for math
+    pos_x += step_length * cosf(heading_rad);
+    pos_y += step_length * sinf(heading_rad);
+
+    peak_count = steps;
+
+    //pdr_to_latlon(lat0, lon0, heading_deg, step_length, &new_lat, &new_lon);
+
+    displacement_to_latlon(lat0, lon0, pos_x, pos_y, &new_lat, &new_lon);
+
+    fprintf(pdr_log, "%d,%f,%f,%f,%f,%f\n", peak_count, pos_x, pos_y, heading_deg,new_lat,new_lon);
+
+    printf("Step %d, Heading=%f, PosX=%f, PosY=%f, Lattitude=%f, Longitude=%f\n", peak_count, heading_deg, pos_x, pos_y,
+                        new_lat,new_lon);
 }
 //===============================================================================
 // @brief  PDR Algorithm
@@ -197,7 +263,7 @@ void process_sensor_data(float ax, float ay, float az,
     #endif
 #if(1)
     if(detect_step(ax,ay,az)){
-        update_position(0.7f); // Assume 0.7m per step
+        update_position(0.7f,1); // Assume 0.7m per step
     }
 #endif
     

@@ -9,6 +9,9 @@
 #include "Algorithms/stepCounter_openSource.h"
 #include "Algorithms/stepCounter_HPF_BPF.h"
 
+int steps = 0;
+FILE *pdr_log;
+FILE *step_detection_log;
 //===============================================================================
 // @brief  Count number of rows in a data logger file
 //
@@ -88,7 +91,7 @@ int sqrt_approx(int value) {
 int main(){
     printf("hello world\n");
      //const char *filename = "D:\\AarnikTechSys\\Firmware\\Repository\\Design\\Algorithms\\People_Data\\14062025\\Chakri_42_5_7_96_Male_Walking_1749920228_1749920957_1749901177768_1749901422859.csv";
-    const char *filename = "C:\\Users\\Admin\\Downloads\\J Chandra Sekhar_41_Male_171(Cm)_85(Kg)_Brisk walking_Outdoor_cool_1752065182312_1752066144350.csv";
+    const char *filename = "C:\\Users\\Admin\\Downloads\\SdcardData_1756058501_1756058623_1756038840363_1756038885839.csv";
      
     int rows = count_rows(filename);
 
@@ -139,8 +142,7 @@ int main(){
     char line[256];
     int row = 0;
     int total_step_count = 0;
-    int total_step_count_OF = 0;
-    int steps = 0;
+    int total_step_count_OF = 0;    
 	static int32_t idle_accel_sum = 0,idle_gyro_sum = 0;
 	static int idle_counter = 0;
     int16_t recent_step_counter = 0;
@@ -164,7 +166,28 @@ int main(){
 
     fclose(file);
 
+    pdr_log = fopen("pdr_log.csv", "w");
+    if (pdr_log != NULL) {
+        // Write the CSV header
+        fprintf(pdr_log, "steps,x,y,heading,latitude,longitude\n");
+    } else {
+        // Handle file open error
+        printf("Failed to open pdr_log.csv\n");
+    }
+
+    step_detection_log = fopen("step_detection_log.csv", "w");
+    if (step_detection_log != NULL) {
+        // Write the CSV header
+        fprintf(step_detection_log, "avg_interval,min_peak_distance,std,energy,mean_z\n");
+    } else {
+        // Handle file open error
+        printf("Failed to open step_detection_log.csv\n");
+    }
+
+
     int total_iterations = rows / N;
+    total_iterations = 20;
+    steps = 0;
 
     printf("Rows=%d\n", rows);   
 # if(0)
@@ -208,7 +231,7 @@ int main(){
             Mz[i] = (int)mz[i + iteration_cnt * N];
         }
         //steps += process_step_block(&Ax[0], &Ay[0], &Az[0],&Gx[0],&Gy[0],&Gz[0],&recent_step_counter);
-        steps += process_step_block_SF(&Ax[0], &Ay[0], &Az[0],&Gx[0],&Gy[0],&Gz[0],N);
+        steps += process_step_block_SF(&Ax[0], &Ay[0], &Az[0],&Gx[0],&Gy[0],&Gz[0],&Mx[0],&My[0],&Mz[0],N);
         block_offset += N; 
     }
 
