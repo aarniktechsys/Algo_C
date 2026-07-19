@@ -27,7 +27,7 @@
       ]
     },
     {
-      "name": "Debug step_counter",
+      "name": "Debug Step Counter (with breakpoints)",
       "type": "cppdbg",
       "request": "launch",
       "program": "${workspaceFolder}/main.exe",
@@ -37,15 +37,25 @@
       "environment": [],
       "externalConsole": true,
       "MIMode": "gdb",
-      "miDebuggerPath": "C:/Users/Admin/mingw64/bin/gdb.exe", // or full path if needed
+      "miDebuggerPath": "C:/Users/Admin/mingw64/bin/gdb.exe",
       "setupCommands": [
         {
           "description": "Enable pretty-printing",
           "text": "-enable-pretty-printing",
           "ignoreFailures": true
+        },
+        {
+          "description": "Set disassembly flavor to Intel",
+          "text": "-gdb-set disassembly-flavor intel",
+          "ignoreFailures": true
         }
       ],
-      "preLaunchTask": "build C program"
+      "preLaunchTask": "build C program",
+      "logging": {
+        "trace": false,
+        "traceResponse": false,
+        "engineLogging": false
+      }
     }
   ]
 }

@@ -3,7 +3,9 @@
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include "../main.h"
 
+#if(STEP_COUNTER_ALG_ENABLE)
 #define SAMPLE_RATE_HZ        52
 #define N_SAMPLES             9000   // Max number of samples
 #define THRESHOLD_MULTIPLIER  0.2f
@@ -13,3 +15,4 @@
 
 extern int process_sample_oxford(int Ax, int Ay, int Az);
 extern int process_all_samples(int rows);
+#endif

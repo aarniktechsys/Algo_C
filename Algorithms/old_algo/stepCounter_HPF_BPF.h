@@ -3,7 +3,9 @@
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include "../main.h"
 
+#if(STEP_COUNTER_ALG_ENABLE)
 #define N           48
 #define HP_ORDER    4
 #define HP_TAPS     5
@@ -54,3 +56,4 @@ int process_step_block(int16_t *Ax_raw, int16_t *Ay_raw, int16_t *Az_raw,
 int process_step_block_SF(int16_t *Ax_raw, int16_t *Ay_raw, int16_t *Az_raw,
                           int16_t *Gx_raw, int16_t *Gy_raw, int16_t *Gz_raw,
                           int16_t *Mx_raw, int16_t *My_raw, int16_t *Mz_raw, uint8_t total_samples);
+#endif        

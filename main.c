@@ -3,11 +3,29 @@
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <math.h>
 #include "main.h"
-#include "Algorithms/stepCounter.h"
-#include "Algorithms/PedestrianDeadRecon.h"
-#include "Algorithms/stepCounter_openSource.h"
-#include "Algorithms/stepCounter_HPF_BPF.h"
+//#include "Algorithms/stepCounter.h"
+//#include "Algorithms/PedestrianDeadRecon.h"
+//#include "Algorithms/stepCounter_openSource.h"
+//#include "Algorithms/stepCounter_HPF_BPF.h"
+
+//===============================================================================
+// @brief Select which step counter algorithm to use
+// Set to 0 for stepCounter_integrated
+// Set to 1 for stepCounter_HPF_BPF_remaster
+//===============================================================================
+#define USE_REMASTER_VERSION 1
+
+#if USE_REMASTER_VERSION
+#include "Algorithms/stepCounter_HPF_BPF_remaster.h"
+#define PROCESS_STEP_BLOCK process_step_block_remaster
+#define ALGO_NAME "HPF_BPF_Remaster"
+#else
+#include "Algorithms/stepCounter_integrated.h"
+#define PROCESS_STEP_BLOCK process_step_block_integrated
+#define ALGO_NAME "Integrated"
+#endif
 
 int steps = 0;
 FILE *pdr_log;
@@ -29,19 +47,24 @@ int count_rows(const char *filename){
     FILE *file = fopen(filename, "r");
 
     if (!file){
-        printf("error opening a file\n");
+        printf("ERROR: Failed to open file: %s\n", filename);
+        return 0;
     }
-    printf("file opened successfully\n");
+    printf("File opened successfully\n");
 
     //Skip header
-    fgets(line, sizeof(line), file);
+    if (fgets(line, sizeof(line), file) == NULL) {
+        printf("WARNING: File is empty or could not read header\n");
+        fclose(file);
+        return 0;
+    }
 
     //Count the rows
     while (fgets(line,sizeof(line),file)){
         count++;
-    };
+    }
 
-    printf("number of rows in file = %ld", count);
+    printf("Number of rows in file = %d\n", count);
 
     fclose(file);
     return count;
@@ -90,8 +113,7 @@ int sqrt_approx(int value) {
 //===============================================================================
 int main(){
     printf("hello world\n");
-     //const char *filename = "D:\\AarnikTechSys\\Firmware\\Repository\\Design\\Algorithms\\People_Data\\14062025\\Chakri_42_5_7_96_Male_Walking_1749920228_1749920957_1749901177768_1749901422859.csv";
-    const char *filename = "C:\\Users\\Admin\\Downloads\\SdcardData_1756058501_1756058623_1756038840363_1756038885839.csv";
+    const char *filename = "D:\\AarnikTechSys\\Firmware\\Repository\\Design\\Algorithms\\People_Data\\14062025\\Sekhar_42_Male_171Cm_82Kg_Briskwalking_Outdoor_cool_1783070734932_1783071658709.csv";
      
     int rows = count_rows(filename);
 
@@ -147,8 +169,15 @@ int main(){
 	static int idle_counter = 0;
     int16_t recent_step_counter = 0;
     int block_offset  = 0;    
+    const float GYRO_SENSITIVITY_MDPS_PER_COUNT = 500.0f * 1000.0f / 32768.0f;  // ~15.26 mdps/count
 
     FILE *file = fopen(filename, "r");
+
+    if (file == NULL) {
+        printf("ERROR: Failed to open file: %s\n", filename);
+        printf("Possible causes: File not found, path too long, or invalid characters\n");
+        return 1;
+    }
 
     //skip header
     fgets(line, sizeof(line), file);
@@ -186,57 +215,89 @@ int main(){
 
 
     int total_iterations = rows / N;
-    total_iterations = 20;
+    //total_iterations = 20;
     steps = 0;
 
-    printf("Rows=%d\n", rows);   
-# if(0)
-    for (int iteration_cnt = 0; iteration_cnt < rows;iteration_cnt++){
+    printf("================== STEP COUNTER DEBUG SESSION ==================\n");
+    printf("Algorithm: %s\n", ALGO_NAME);
+    printf("Rows=%d, Total Iterations=%d, N=%d\n", rows, total_iterations, N);
+    printf("Data file: %s\n", filename);
+    printf("================================================================\n\n");
 
-        int Ax = (int)ax[iteration_cnt];
-        int Ay = (int)ay[iteration_cnt];
-        int Az = (int)az[iteration_cnt];
-        int Gx = (int)gx[iteration_cnt];
-        int Gy = (int)gy[iteration_cnt];
-        int Gz = (int)gz[iteration_cnt];
-        int Mx = (int)mx[iteration_cnt];
-        int My = (int)my[iteration_cnt];
-        int Mz = (int)mz[iteration_cnt];
+    // Initialize step counter state before processing
+    init_step_counter_state();
 
-    #if (EXECUTE_STEP_COUNTER_ALGO)
-        steps += process_sample(Ax, Ay, Az, Gx, Gy, Gz);        
-    #endif
-    #if (EXECUTE_PDR_ALGO)
-        process_sensor_data(Ax, Ay, Ax, Gx, Gy, Gz, Mx, My, Mz);
-    #endif
-    #if (EXECUTE_OPENSOURCE_STEP_CNT)
-        if(process_sample_oxford(Ax, Ay, Az) == 1){
-            steps++;
+    // === VALIDATION: Check first block data ===
+    printf(">>> VALIDATION: Checking first block (iteration 0)...\n");
+    for (int i = 0; i < N; i++){
+        int idx = i + 0 * N;
+        if (i < 5) {  // Print first 5 samples
+            printf("  Sample[%d]: ax=%d ay=%d az=%d | gx=%d gy=%d gz=%d\n",
+                   idx, ax[idx], ay[idx], az[idx], gx[idx], gy[idx], gz[idx]);
         }
-    #endif
     }
-#endif       
+    printf(">>> Accel data range: min/max check\n");
+    int ax_min = ax[0], ax_max = ax[0];
+    for (int i = 0; i < N; i++) {
+        if (ax[i] < ax_min) ax_min = ax[i];
+        if (ax[i] > ax_max) ax_max = ax[i];
+    }
+    printf("    Accel X range: [%d, %d] (expect ±2000-4000 for normal motion)\n", ax_min, ax_max);
+    printf("\n");
 
-    for (int iteration_cnt = 0; iteration_cnt < total_iterations;iteration_cnt++){
+    // === MAIN PROCESSING LOOP ===
+    printf(">>> PROCESSING %d blocks of %d samples each...\n\n", total_iterations, N);
+
+    // Create float sensor data structures
+    SENSOR_DATA_F accel_data[N], gyro_data[N];
+
+    init_step_counter_state();
+
+    for (int iteration_cnt = 0; iteration_cnt < total_iterations; iteration_cnt++){
+
+        // Convert sensor data to float and calculate dynamic acceleration
+        float accel_mean_mag = 0.0f;
+        float gyro_mean_mag = 0.0f;
 
         for (int i = 0; i < N; i++){
-            Ax[i] = (int)ax[i + iteration_cnt * N];
-            Ay[i] = (int)ay[i + iteration_cnt * N];
-            Az[i] = (int)az[i + iteration_cnt * N];
-            Gx[i] = (int)gx[i + iteration_cnt * N];
-            Gy[i] = (int)gy[i + iteration_cnt * N];
-            Gz[i] = (int)gz[i + iteration_cnt * N];
-            Mx[i] = (int)mx[i + iteration_cnt * N];
-            My[i] = (int)my[i + iteration_cnt * N];
-            Mz[i] = (int)mz[i + iteration_cnt * N];
-        }
-        //steps += process_step_block(&Ax[0], &Ay[0], &Az[0],&Gx[0],&Gy[0],&Gz[0],&recent_step_counter);
-        steps += process_step_block_SF(&Ax[0], &Ay[0], &Az[0],&Gx[0],&Gy[0],&Gz[0],&Mx[0],&My[0],&Mz[0],N);
-        block_offset += N; 
+            int idx = i + iteration_cnt * N;
+            
+            accel_data[i].x = (float)ax[idx];
+            accel_data[i].y = (float)ay[idx];
+            accel_data[i].z = (float)az[idx];
+
+            // Gyro data is in DPS (degrees per second)
+            gyro_data[i].x = (float)gx[idx];
+            gyro_data[i].y = (float)gy[idx];
+            gyro_data[i].z = (float)gz[idx];
+        }        
+
+        // Process block with selected step counter algorithm
+        printf("[Block %2d] Processing...\n", iteration_cnt);
+        printf("          Dynamic accel mean=%.2f mg, Gyro mean=%.2f DPS\n",
+               accel_mean_mag, gyro_mean_mag);
+        int block_steps = PROCESS_STEP_BLOCK(accel_data, gyro_data, N);
+        steps += block_steps;
+
+        // Log results
+        printf("[Block %2d] Result: +%d steps, Total: %d\n",
+               iteration_cnt, block_steps, steps);
+        printf("          Debug: mean=%d std=%d energy=%d threshold=%d peaks=%d\n",
+               g_step_debug.mean, g_step_debug.std, g_step_debug.energy,
+               g_step_debug.threshold, g_step_debug.peak_count);
+        printf("\n");
+
+        block_offset += N;
     }
 
-    printf("Total step count= %d\n",steps);
+    printf("\n================== FINAL RESULTS ==================\n");
+    printf("Total step count: %d steps over %d blocks\n", steps, total_iterations);
+    printf("Average steps per block: %.2f\n", (float)steps / total_iterations);
+    printf("===================================================\n");
+    printf("Press any key to exit...\n");
     getchar();
 
     return 0;
 }
+
+

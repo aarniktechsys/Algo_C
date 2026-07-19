@@ -5,6 +5,8 @@
 #include <string.h>
 #include <stdint.h>
 #include "../main.h"
+
+#if(STEP_COUNTER_ALG_ENABLE)
 #include "stepCounter_HPF_BPF.h"
 #include "PedestrianDeadRecon.h"
 
@@ -288,6 +290,6 @@ int process_step_block_SF(int16_t *Ax_raw, int16_t *Ay_raw, int16_t *Az_raw,
 
     return peak_count;
 }
-    
+#endif    
 
 

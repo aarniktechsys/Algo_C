@@ -4,6 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include "../main.h"
+
+#if(STEP_COUNTER_ALG_ENABLE)
 #include "stepCounter_HPF_BPF.h"
 
 // High-pass filter (0.3Hz @ 52Hz)
@@ -234,3 +237,4 @@ int process_step_block(int16_t *Ax_raw, int16_t *Ay_raw, int16_t *Az_raw,
     return steps;
     
 }
+#endif

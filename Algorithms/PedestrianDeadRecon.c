@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <math.h>
+
+#if(STEP_COUNTER_ALG_ENABLE)
 #include "../main.h"
 #include "stepCounter.h"
 #include "PedestrianDeadRecon.h"
@@ -268,3 +270,4 @@ void process_sensor_data(float ax, float ay, float az,
 #endif
     
 }
+#endif

@@ -7,6 +7,9 @@
  #include <math.h>
  #include <stdint.h>
  #include <string.h>
+ #include "../main.h"
+ 
+ #if(STEP_COUNTER_ALG_ENABLE)
  #include "stepCounter_openSource.h"
  
  // Oxford StepCounter state
@@ -58,5 +61,5 @@
  
      return StepCountingAlgo_Process(ax_g, ay_g, az_g);
  } 
-
+#endif
  

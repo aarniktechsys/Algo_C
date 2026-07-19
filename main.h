@@ -8,6 +8,8 @@
 #define true    1
 #define false   0
 
+#define  STEP_COUNTER_ALG_ENABLE   0
+
 extern int steps;
 extern FILE *pdr_log;
 extern FILE *step_detection_log;

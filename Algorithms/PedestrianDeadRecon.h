@@ -3,8 +3,9 @@
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include "../main.h"
 
-
+#if(STEP_COUNTER_ALG_ENABLE)
 #define SAMPLE_FREQ    52  //100.0f   // Hz
 #define BETA_DEF       0.1f     // 2 * proportional gain
 #define DEG2RAD(x)     ((x) * 0.01745329251f)
@@ -19,3 +20,4 @@ extern void process_sensor_data(float ax, float ay, float az,
 extern void MadgwickAHRSupdate(float gx, float gy, float gz, float ax, float ay, float az,
                                float mx, float my, float mz);
 extern void update_position(float step_length, int peak_count);
+#endif

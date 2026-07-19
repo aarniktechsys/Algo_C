@@ -3,6 +3,9 @@
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include "../main.h"
+
+#if(STEP_COUNTER_ALG_ENABLE)
 #include "stepCounter.h"
 
 
@@ -244,3 +247,4 @@ int16_t process_sample(int Ax, int Ay, int Az, int Gx, int Gy, int Gz) {
 
 	return steps;    
 }
+#endif
