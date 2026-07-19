@@ -5,8 +5,6 @@
 #include <stdint.h>
 #include "activity_profiles.h"
 
-#if(1)
-
 // Type alias for sensor data arrays
 typedef struct {
     float x;
@@ -36,10 +34,12 @@ extern SENSOR_DATA_F accel_data[48], gyro_data[48];;
 #define TRANSITION_THRESHOLD_G      0.25f   // 250 mg motion to trigger exit
 
 // Gyro validation (production-grade, fixed)
-#define GYRO_IDLE_THRESHOLD_DPS     20.0f   // ±20 dps rotation
-#define MAX_ACTIVE_GYRO_SAMPLES     2       // Allow only 2 high-gyro samples
-#define GYRO_WINDOW                 2       // 5-point moving average
-#define GYRO_RMS_IDLE_DPS           15.0f   // RMS threshold for fidget suppression
+// NOTE: Gyro data is in mdps (millidegrees/sec), so multiply DPS thresholds by 1000
+#define GYRO_IDLE_THRESHOLD_DPS     20000.0f   // 20 DPS = 20000 mdps rotation
+#define MAX_ACTIVE_GYRO_SAMPLES     2          // Allow only 2 high-gyro samples
+#define GYRO_WINDOW                 2          // 5-point moving average
+#define GYRO_RMS_IDLE_DPS           15000.0f   // 15 DPS = 15000 mdps RMS threshold for fidget suppression
+#define GYRO_Z_FIDGET_THRESHOLD     30000.0f   // 30 DPS = 30000 mdps Z-axis (pure wrist rotation = fidgeting)
 
 // Threshold computation (production-grade)
 #define THRESHOLD_BASE_K            1.2f    // base_threshold = mean + 1.2·σ
@@ -122,8 +122,6 @@ extern SENSOR_DATA_F accel_data[48], gyro_data[48];;
 #define GYRO_RMS_BLOCKS 5
 #endif
 
-#define GYRO_Z_FIDGET_THRESHOLD     30000.0f   // 30 DPS = 30000 mdps Z-axis (pure wrist rotation = fidgeting)
-
 //============== PRODUCTION-GRADE STRUCTURES ==============
 
 typedef struct {
@@ -142,6 +140,15 @@ typedef struct {
     int min_idx;
 } SignalStats;
 
+typedef enum {
+    AUTO_UNKNOWN = 0,
+    AUTO_SLOW_WALK = 1,      // <80 BPM
+    AUTO_NORMAL_WALK = 2,    // 80-110 BPM
+    AUTO_BRISK_WALK = 3,     // 110-140 BPM
+    AUTO_JOGGING = 4,        // 140-180 BPM
+    AUTO_RUNNING = 5         // >180 BPM
+} ActivityType_Auto;
+
 typedef struct {
     int sample_idx_global;
     int last_peak_global;
@@ -152,6 +159,11 @@ typedef struct {
     float gyro_rms_history[GYRO_RMS_BLOCKS];
     uint8_t gyro_rms_idx;
     ActivityType_t activity_type;      // Current selected activity (NORMAL_WALK, BRISK_WALK, etc)
+    ActivityType_Auto detected_activity; // Auto-detected activity from step rate
+    uint16_t step_intervals[10];       // Track last 10 step intervals
+    uint8_t interval_idx;
+    uint8_t interval_count;
+    uint8_t activity_confirm_count;    // Blocks to confirm activity detection
 } StepCounterState;
 
 typedef struct {
@@ -202,4 +214,8 @@ extern void detect_wrist_raise_v2(const float *ax, const float *ay, const float 
                                   uint8_t total_samples);
 extern void highpass_filtfilt(const float *input, float *output);
 extern void bandpass_filtfilt(const float *input, float *output);
-#endif
+extern float compute_peak_score(const float *signal, int idx, int window_size, uint8_t total_samples);
+extern ActivityType_Auto detect_activity_from_rate(uint16_t avg_step_interval_samples);
+extern void update_step_interval(int distance_since_last_peak);
+extern uint16_t get_average_step_interval(void);
+extern void get_adaptive_cadence_range(ActivityType_Auto activity, uint8_t *min, uint8_t *max);

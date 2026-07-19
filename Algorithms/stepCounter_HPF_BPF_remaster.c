@@ -275,6 +275,108 @@ void compute_signal_stats(
 }
 
 //===============================================================================
+// @brief Detect activity type based on average step rate
+// Maps step interval (samples) to activity classification
+//===============================================================================
+ActivityType_Auto detect_activity_from_rate(uint16_t avg_step_interval_samples) {
+	// Convert samples to BPM: BPM = 60 Hz / (samples / 52 Hz) = 3120 / samples
+	float bpm = (avg_step_interval_samples > 0) ? (3120.0f / avg_step_interval_samples) : 0;
+
+	if (bpm < 80) return AUTO_SLOW_WALK;       // <80 BPM
+	if (bpm < 110) return AUTO_NORMAL_WALK;    // 80-110 BPM
+	if (bpm < 140) return AUTO_BRISK_WALK;     // 110-140 BPM
+	if (bpm < 180) return AUTO_JOGGING;        // 140-180 BPM
+	return AUTO_RUNNING;                       // >180 BPM
+}
+
+//===============================================================================
+// @brief Get adaptive cadence range based on detected activity
+//===============================================================================
+void get_adaptive_cadence_range(ActivityType_Auto activity, uint8_t *min, uint8_t *max) {
+	// At 52 Hz, X samples = (X/52)*1000 ms
+	switch (activity) {
+		case AUTO_SLOW_WALK:    // <80 BPM, step ~750ms = 39 samples
+			*min = 22;  // 423ms
+			*max = 75;  // 1442ms
+			break;
+
+		case AUTO_NORMAL_WALK:  // 80-110 BPM, step ~545ms = 28 samples
+			*min = 18;  // 346ms (173 BPM max)
+			*max = 70;  // 1346ms (44 BPM min)
+			break;
+
+		case AUTO_BRISK_WALK:   // 110-140 BPM, step ~430ms = 22 samples
+			*min = 15;  // 288ms (207 BPM max)
+			*max = 65;  // 1250ms (48 BPM min)
+			break;
+
+		case AUTO_JOGGING:      // 140-180 BPM, step ~345ms = 18 samples
+			*min = 12;  // 231ms (259 BPM max) - catches faster jogging
+			*max = 55;  // 1058ms (57 BPM min)
+			break;
+
+		case AUTO_RUNNING:      // >180 BPM, step ~333ms = 17 samples
+			*min = 10;  // 192ms (323 BPM max) - catches fast running
+			*max = 50;  // 962ms (62 BPM min)
+			break;
+
+		default:
+			*min = 18;  // Default to normal walk
+			*max = 70;
+	}
+}
+
+//===============================================================================
+// @brief Update step interval tracking for activity detection
+//===============================================================================
+void update_step_interval(int distance_since_last_peak) {
+	g_step_state.step_intervals[g_step_state.interval_idx] = (uint16_t)distance_since_last_peak;
+	g_step_state.interval_idx = (g_step_state.interval_idx + 1) % 10;
+	if (g_step_state.interval_count < 10) {
+		g_step_state.interval_count++;
+	}
+}
+
+//===============================================================================
+// @brief Calculate average step interval from tracked intervals
+//===============================================================================
+uint16_t get_average_step_interval(void) {
+	if (g_step_state.interval_count == 0) return 0;
+
+	uint32_t sum = 0;
+	for (uint8_t i = 0; i < g_step_state.interval_count; i++) {
+		sum += g_step_state.step_intervals[i];
+	}
+	return (uint16_t)(sum / g_step_state.interval_count);
+}
+
+//===============================================================================
+// @brief Compute peak "peakiness" score using Mean Difference (Oxford paper)
+// Higher score = more peak-like
+//===============================================================================
+float compute_peak_score(const float *signal, int idx, int window_size, uint8_t total_samples) {
+	if (idx < window_size || idx >= (total_samples - window_size))
+		return 0.0f;
+
+	float score = 0.0f;
+	int count = 0;
+
+	// Mean difference to left and right
+	for (int k = 1; k <= window_size; k++) {
+		if (idx - k >= 0) {
+			score += (signal[idx] - signal[idx - k]);
+			count++;
+		}
+		if (idx + k < total_samples) {
+			score += (signal[idx] - signal[idx + k]);
+			count++;
+		}
+	}
+
+	return (count > 0) ? (score / count) : 0.0f;
+}
+
+//===============================================================================
 // @brief Validate peak prominence and width (production-grade)
 //===============================================================================
 uint8_t validate_peak(
@@ -435,8 +537,12 @@ int process_step_block_remaster(SENSOR_DATA_F* accel_data, SENSOR_DATA_F* gyro_d
 	static float magnitude[BLOCK_SIZE], filtered_mag[BLOCK_SIZE];
 	static float gyro_x[BLOCK_SIZE], gyro_y[BLOCK_SIZE], gyro_z[BLOCK_SIZE];
 	static float gyro_mag[BLOCK_SIZE];
+	static uint16_t idle_reject_count = 0;
+	static uint16_t energy_reject_count = 0;
+	static uint16_t total_blocks = 0;
 
 	int block_step_count = 0;
+	total_blocks++;
 
 	// ===== PHASE 1: Copy sensor data and compute gyro Z-axis RMS =====
 	float gyro_z_rms = 0.0f;
@@ -498,22 +604,25 @@ int process_step_block_remaster(SENSOR_DATA_F* accel_data, SENSOR_DATA_F* gyro_d
 
 	if (is_idle) {
 #if (DEBUG_SAMPLES)
-		printf("[Idle] std=%.4f mg, energy=%.4f mg² (too low for walking)\n", std, energy);
+		printf("[BLOCK IDLE] std=%.1f mg, energy=%.0f mg² (too low for walking) → returning 0 steps\n", std, energy);
 #endif
+		idle_reject_count++;
 		return 0;
 	}
 
 	// ===== PHASE 10b: Reject extreme fidgeting (too much energy) =====
 	// Energy is in (mg)² = 1,000,000 × (g)²
-	// Normal walking: ~30,000-160,000 mg² (0.03-0.16 g²) - actual data shows this range
-	// Vigorous arm swinging during walking: ~50,000-100,000 mg² (normal)
-	// Extreme shaking/device dropping: >300,000 mg² (unrealistic for normal walking)
-	// Threshold raised from 100k to 300k to avoid rejecting vigorous walking
-	if (energy > 300000.0f) {
+	// Normal walking: ~30,000-160,000 mg² (0.03-0.16 g²)
+	// Vigorous walking/running: ~100,000-300,000 mg² (normal for active movement)
+	// Device drop or extreme shock: >500,000 mg² (unrealistic)
+	// Threshold raised to 1.5M to allow jogging (600k-1M mg²) and vigorous running (up to 1.2M mg²)
+	// Only reject if energy exceeds physical device limits or true motion artifacts
+	if (energy > 1500000.0f) {
 #if (DEBUG_SAMPLES)
-		printf("[ExtremeEnergy] energy=%.0f mg² > 300k - rejecting extreme motion\n", energy);
+		printf("[EXTREME ENERGY] energy=%.0f mg² > 1.5M → returning 0 steps\n", energy);
 #endif
 		// Reset consecutive peaks when rejecting extreme-energy block
+		energy_reject_count++;
 		g_step_state.consecutive_peaks = 0;
 		return 0;
 	}
@@ -527,26 +636,36 @@ int process_step_block_remaster(SENSOR_DATA_F* accel_data, SENSOR_DATA_F* gyro_d
 		std, energy, mean, threshold);
 #endif
 
-	// ===== PHASE 5b: Detect peaks - find all local maxima =====
-	// Find ALL local maxima in filtered magnitude
-	// Cadence validation + consecutive peaks requirement filters false positives
-	// Don't add threshold requirement here - peaks vary in amplitude
+	// ===== PHASE 5b: Detect peaks - find all local maxima with scoring =====
+	// Find ALL local maxima and compute peakiness score (Oxford paper method)
+	// Use Mean Difference scoring to enhance peak quality assessment
 	int peak_indices[BLOCK_SIZE];
+	float peak_scores[BLOCK_SIZE];
 	int peak_count_in_block = 0;
 
+	int score_window = 4;  // Window size for peakiness calculation
+
 	for (int i = 1; i < total_samples - 1; ++i) {
-		// Simple local maximum (no threshold requirement)
+		// Simple local maximum
 		if (filtered_mag[i] > filtered_mag[i - 1] &&
 			filtered_mag[i] > filtered_mag[i + 1]) {
-			peak_indices[peak_count_in_block++] = i;
+
+			// Compute peakiness score (Oxford Mean Difference method)
+			float score = compute_peak_score(filtered_mag, i, score_window, total_samples);
+
+			// Be permissive: Accept all local maxima (score filtering done in cadence check)
+			// This catches small-amplitude valid steps that have good cadence
+			peak_indices[peak_count_in_block] = i;
+			peak_scores[peak_count_in_block] = score;
+			peak_count_in_block++;
 		}
 	}
 
 #if (DEBUG_SAMPLES)
 	if (peak_count_in_block > 0) {
-		printf("[Peaks] %d detected in block: ", peak_count_in_block);
+		printf("[Peaks] %d detected in block (scored): ", peak_count_in_block);
 		for (int i = 0; i < peak_count_in_block; i++) {
-			printf("%d ", peak_indices[i]);
+			printf("%d(%.3f) ", peak_indices[i], peak_scores[i]);
 		}
 		printf("\n");
 	}
@@ -556,50 +675,102 @@ int process_step_block_remaster(SENSOR_DATA_F* accel_data, SENSOR_DATA_F* gyro_d
 	// This is the CORE of the algorithm: maintain state across blocks
 	// Do NOT reset g_step_state between blocks!
 
-	int min_peak_distance = 8;  // At 26 Hz: 8 samples = 308 ms = supports ~195 BPM
-
 	// Process each peak found in this block
 	for (int i = 0; i < peak_count_in_block; ++i) {
 		int local_idx = peak_indices[i];
 		int global_idx = g_step_state.sample_idx_global + local_idx;
 		int distance_since_last_peak = global_idx - g_step_state.last_peak_global;
+		float peak_score = peak_scores[i];
 
-		// ===== PHASE 11: Refractory period (block boundary protection) =====
-		// Skip peaks that occur within 210ms (~11 samples @ 52 Hz) of the last accepted peak
-		// This prevents double-counting the same step at block boundaries
-		// At 52 Hz: 210ms = 11 samples (allows fast walking/running variation)
-		if (distance_since_last_peak < 11) {
 #if (DEBUG_SAMPLES)
-			printf("[Refractory] global_idx=%d, last=%d, dist=%d < 11 (skipped)\n",
-				global_idx, g_step_state.last_peak_global, distance_since_last_peak);
+		printf("[PeakAnalysis] idx=%d global=%d score=%.3f\n",
+			local_idx, global_idx, peak_score);
+#endif
+
+		// ===== PHASE 10b: Peak quality filter =====
+		// Reject low-score peaks (noise, weak artifacts from filtering)
+		// High-quality steps have strong peakiness signatures
+		// Threshold: 5.0 optimized for broad cadence range
+		// Scores 0-5: obvious noise, 5+: accept if cadence valid
+		// Cadence validation (17-75 samples) provides primary filtering
+		float min_peak_score = 5.0f;  // Very lenient: cadence validation is primary filter
+
+		if (peak_score < min_peak_score) {
+#if (DEBUG_SAMPLES)
+			printf("  ↳ [REJECTED] Low peak quality: score=%.1f < min=%.1f (weak peak/noise)\n",
+				peak_score, min_peak_score);
 #endif
 			continue;
 		}
 
-		// ===== PHASE 8: Cadence validation =====
-		// Walking cadence: Wide range to capture natural walking variation (100-300 BPM)
-		// At 52 Hz: 13 samples = 250ms (~240 BPM), 68 samples = 1310ms (~46 BPM)
-		// STRICT initially (13-68 samples) to confirm walking with full natural variation
-		// LENIENT after confirmed (12-70 samples) for even wider acceptance
-		uint8_t cadence_min = (g_step_state.consecutive_peaks < 3) ? 13 : 12;   // 240-260 BPM strict / 260-280 BPM lenient
-		uint8_t cadence_max = (g_step_state.consecutive_peaks < 3) ? 68 : 70;   // 46-48 BPM strict / 44-46 BPM lenient
+		// ===== PHASE 11: Refractory period (block boundary protection) =====
+		// Skip peaks that occur within 154ms (~8 samples @ 52 Hz) of the last accepted peak
+		// This prevents double-counting the same step while allowing multi-peak jogging signal
+		// At 52 Hz: 154ms = 8 samples (allows faster cadences like running/jogging)
+		// Note: Cadence range (10-75) provides primary validation, refractory is secondary
+		if (distance_since_last_peak < 8) {
+#if (DEBUG_SAMPLES)
+			printf("  ↳ [REJECTED] Refractory period: dist=%d < 8 samples (double-count protection)\n",
+				distance_since_last_peak);
+#endif
+			continue;
+		}
 
-		uint8_t cadence_valid = (distance_since_last_peak >= cadence_min && distance_since_last_peak <= cadence_max);
+		// ===== PHASE 8: Global Cadence Validation =====
+		// Single permissive range works across all activities:
+		// - Slow walking: ~39 samples (75 BPM)
+		// - Normal walking: ~28 samples (111 BPM)
+		// - Brisk walking: ~22 samples (142 BPM)
+		// - Jogging: ~18 samples (173 BPM)
+		// - Running: ~17 samples (183 BPM)
+		//
+		// At 52 Hz per sample interval:
+		//   10 samples = 192ms (312 BPM) - fast running
+		//   20 samples = 385ms (156 BPM) - brisk walk
+		//   30 samples = 577ms (104 BPM) - normal walk
+		//   40 samples = 769ms (78 BPM) - slow walk
+		//   75 samples = 1442ms (42 BPM) - very slow walk
+
+		// Track step intervals for activity detection (debug info only)
+		update_step_interval(distance_since_last_peak);
+
+		// Every 10 valid peaks, show detected activity for diagnostics
+		if ((g_step_state.consecutive_peaks % 10) == 0 && g_step_state.interval_count >= 5) {
+			uint16_t avg_interval = get_average_step_interval();
+			g_step_state.detected_activity = detect_activity_from_rate(avg_interval);
+
+#if (DEBUG_SAMPLES)
+			const char* activity_names[] = {"UNKNOWN", "SLOW_WALK", "NORMAL_WALK", "BRISK_WALK", "JOGGING", "RUNNING"};
+			float bpm = (avg_interval > 0) ? (3120.0f / avg_interval) : 0;
+			printf("[ACTIVITY_INFO] %s (avg_interval=%d samples, ~%.0f BPM)\n",
+				activity_names[g_step_state.detected_activity], avg_interval, bpm);
+#endif
+		}
+
+		// Single global cadence range (permissive to catch all activities)
+		uint8_t cadence_min = 10;   // 192ms - allows fast running
+		uint8_t cadence_max = 75;   // 1442ms - allows very slow walking
+
+		uint8_t cadence_valid = (distance_since_last_peak >= cadence_min &&
+								 distance_since_last_peak <= cadence_max);
 
 		if (!cadence_valid) {
 #if (DEBUG_SAMPLES)
-			printf("[Cadence] distance=%d samples [min=%d max=%d] - ", distance_since_last_peak, cadence_min, cadence_max);
 			if (distance_since_last_peak < cadence_min) {
-				printf("TOO FAST\n");
+				printf("  ↳ [REJECTED] TOO FAST: dist=%d < min=%d (noise or arm swing)\n",
+					distance_since_last_peak, cadence_min);
 			} else {
-				printf("TOO SLOW\n");
+				printf("  ↳ [REJECTED] TOO SLOW: dist=%d > max=%d (probably noise or missed peak)\n",
+					distance_since_last_peak, cadence_max);
 			}
 #endif
-			// Only reset counter if we haven't confirmed walking yet
-			if (g_step_state.consecutive_peaks < 3) {
+			// Reset counter only for unconfirmed patterns
+			if (g_step_state.consecutive_peaks < 5) {
 				g_step_state.consecutive_peaks = 0;
+#if (DEBUG_SAMPLES)
+				printf("  ↳ [RESET] consecutive_peaks → 0\n");
+#endif
 			}
-			// Always update last peak to maintain continuity
 			g_step_state.last_peak_global = global_idx;
 			continue;
 		}
@@ -610,16 +781,19 @@ int process_step_block_remaster(SENSOR_DATA_F* accel_data, SENSOR_DATA_F* gyro_d
 		g_step_state.last_step_sample = global_idx;
 
 #if (DEBUG_SAMPLES)
-		printf("[ValidPeak] global_idx=%d distance=%d samples consecutive=%d\n",
-			global_idx, distance_since_last_peak, g_step_state.consecutive_peaks);
+		printf("  ↳ [ACCEPTED] Valid cadence: dist=%d samples, consecutive=%d, score=%.1f\n",
+			distance_since_last_peak, g_step_state.consecutive_peaks, peak_score);
 #endif
 
-		// ===== PHASE 8b: Only count step after 3 consecutive valid peaks =====
-		// This ensures we have a walking pattern, not a single vibration
-		if (g_step_state.consecutive_peaks >= 3) {
+		// ===== PHASE 8b: Count step immediately after 1st valid cadence peak =====
+		// CHANGED: Count every peak that passes cadence check
+		// This prevents losing valid steps waiting for "confirmation"
+		// Cadence validation itself acts as the filter
+		if (g_step_state.consecutive_peaks >= 1) {
 			block_step_count++;
 #if (DEBUG_SAMPLES)
-			printf("[STEP] Accepted! consecutive_peaks=%d\n", g_step_state.consecutive_peaks);
+			printf("  ↳ [STEP_COUNTED] peak_score=%.1f, dist=%d samples\n",
+				peak_score, distance_since_last_peak);
 #endif
 		}
 	}
@@ -644,6 +818,19 @@ int process_step_block_remaster(SENSOR_DATA_F* accel_data, SENSOR_DATA_F* gyro_d
 #if (DEBUG_SAMPLES)
 	printf("[BlockEnd] sample_idx_global now=%d steps_this_block=%d\n",
 		g_step_state.sample_idx_global, block_step_count);
+
+	// Print diagnostic summary every 100 blocks
+	if ((total_blocks % 100) == 0) {
+		float idle_percent = (idle_reject_count * 100.0f) / total_blocks;
+		float energy_percent = (energy_reject_count * 100.0f) / total_blocks;
+		printf("\n[DIAGNOSTIC] After %d blocks:\n", total_blocks);
+		printf("  - Idle rejection: %d blocks (%.1f%%)\n", idle_reject_count, idle_percent);
+		printf("  - Extreme energy rejection: %d blocks (%.1f%%)\n", energy_reject_count, energy_percent);
+		printf("  - Active blocks: %d (%.1f%%)\n",
+			total_blocks - idle_reject_count - energy_reject_count,
+			((total_blocks - idle_reject_count - energy_reject_count) * 100.0f) / total_blocks);
+		printf("\n");
+	}
 #endif
 
 	return block_step_count;

@@ -113,7 +113,7 @@ int sqrt_approx(int value) {
 //===============================================================================
 int main(){
     printf("hello world\n");
-    const char *filename = "D:\\AarnikTechSys\\Firmware\\Repository\\Design\\Algorithms\\People_Data\\14062025\\Sekhar_42_Male_171Cm_82Kg_Briskwalking_Outdoor_cool_1783070734932_1783071658709.csv";
+    const char *filename = "D:\\AarnikTechSys\\Firmware\\Repository\\Design\\Algorithms\\People_Data\\19072026\\Sekhar_42_Male_171Cm_82Kg_Slowwalking_Outdoor_cool_1784462389803_1784462979979_1010Steps_15_18_min_km.csv";
      
     int rows = count_rows(filename);
 
@@ -299,5 +299,6 @@ int main(){
 
     return 0;
 }
+
 
 
